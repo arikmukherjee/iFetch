@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>iFetch</title>
+  <style>
+    :root {
+      --bg: #f4f6fb;
+      --card: #fff;
+      --ink: #1c2333;
+      --muted: #6b7385;
+      --accent: #3b5bdb;
+      --ok: #2b8a3e;
+      --err: #c92a2a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", system-ui, sans-serif;
+      padding: 16px;
+    }
+
+    .card {
+      background: var(--card);
+      width: 100%;
+      max-width: 640px;
+      padding: 32px;
+      border-radius: 16px;
+      box-shadow: 0 8px 30px rgba(20, 30, 60, .08);
+    }
+
+    h1 {
+      margin: 0 0 4px;
+      font-size: 28px;
+    }
+
+    .sub {
+      margin: 0 0 24px;
+      color: var(--muted);
+    }
+
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      font-size: 16px;
+      border: 1px solid #cdd3e0;
+      border-radius: 10px;
+    }
+
+    input:focus {
+      outline: 2px solid var(--accent);
+      border-color: transparent;
+    }
+
+    button {
+      width: 100%;
+      margin-top: 12px;
+      padding: 13px;
+      font-size: 16px;
+      font-weight: 600;
+      color: #fff;
+      background: var(--accent);
+      border: 0;
+      border-radius: 10px;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: .55;
+      cursor: not-allowed;
+    }
+
+    .status {
+      margin-top: 24px;
+      padding: 16px;
+      background: #f8f9fc;
+      border-radius: 10px;
+    }
+
+    #state {
+      font-weight: 600;
+    }
+
+    #state.error {
+      color: var(--err);
+    }
+
+    #state.done {
+      color: var(--ok);
+    }
+
+    .bar {
+      height: 8px;
+      background: #e3e7f1;
+      border-radius: 99px;
+      overflow: hidden;
+      margin: 12px 0;
+    }
+
+    .bar div {
+      height: 100%;
+      width: 0;
+      background: var(--accent);
+      transition: width .3s;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      text-align: center;
+      font-size: 13px;
+      color: var(--muted);
+    }
+
+    .stats b {
+      display: block;
+      font-size: 18px;
+      color: var(--ink);
+    }
+
+    #current {
+      margin-top: 10px;
+      font-size: 13px;
+      color: var(--muted);
+      word-break: break-all;
+      min-height: 1.2em;
+    }
+
+    #warnings {
+      margin: 10px 0 0;
+      padding-left: 18px;
+      font-size: 12px;
+      color: var(--muted);
+      max-height: 120px;
+      overflow: auto;
+    }
+  </style>
+</head>
+
+<body>
+  <main class="card">
+    <h1>iFetch</h1>
+    <p class="sub">Recursively download public web folders into a ZIP.</p>
+
+    <input id="url" type="url" placeholder="https://example.com/public-folder/" autocomplete="off">
+    <button id="go">Scan &amp; Download ZIP</button>
+
+    <section class="status">
+      <div id="state">Ready</div>
+      <div class="bar">
+        <div id="fill"></div>
+      </div>
+      <div class="stats">
+        <div><b id="folders">0</b>folders</div>
+        <div><b id="files">0</b>files</div>
+        <div><b id="size">0 B</b>downloaded</div>
+      </div>
+      <div id="current"></div>
+      <ul id="warnings"></ul>
+    </section>
+  </main>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let timer = null;
+
+    function fmtSize(n) {
+      const u = ["B", "KB", "MB", "GB"]; let i = 0;
+      while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+      return (i ? n.toFixed(1) : n) + " " + u[i];
+    }
+
+    function setState(text, cls = "") { $("state").textContent = text; $("state").className = cls; }
+
+    async function start() {
+      const url = $("url").value.trim();
+      if (!url) { setState("Error: please enter a URL.", "error"); return; }
+      $("go").disabled = true;
+      $("warnings").innerHTML = "";
+      $("fill").style.width = "0";
+      setState("Scanning directory...");
+      try {
+        const res = await fetch("/api/download", {
+          method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ url })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || "Request failed");
+        poll(data.job_id);
+      } catch (e) {
+        setState("Error: " + e.message, "error");
+        $("go").disabled = false;
+      }
+    }
+
+    function poll(id) {
+      clearInterval(timer);
+      timer = setInterval(async () => {
+        try {
+          const j = await (await fetch("/api/status/" + id)).json();
+          $("folders").textContent = j.folders;
+          $("files").textContent = j.files;
+          $("size").textContent = fmtSize(j.bytes);
+          $("fill").style.width = j.percent + "%";
+          $("current").textContent = j.current ? "Current: " + j.current : "";
+          $("warnings").innerHTML = "";
+          (j.warnings || []).slice(-20).forEach(w => {
+            const li = document.createElement("li"); li.textContent = w; $("warnings").appendChild(li);
+          });
+          if (j.state === "downloading") setState(`Downloading files... ${j.done}/${j.files} (${j.percent}%)`);
+          else if (j.state === "done") {
+            clearInterval(timer); setState("Download complete", "done"); $("go").disabled = false;
+            $("current").textContent = "Saved to: " + j.saved_path;
+          } else if (j.state === "error") {
+            clearInterval(timer); setState("Error: " + j.message, "error"); $("go").disabled = false;
+          } else setState(j.message);
+        } catch (e) {
+          clearInterval(timer); setState("Error: lost connection to iFetch.", "error"); $("go").disabled = false;
+        }
+      }, 600);
+    }
+
+    $("go").addEventListener("click", start);
+    $("url").addEventListener("keydown", e => { if (e.key === "Enter" && !$("go").disabled) start(); });
+  </script>
+</body>
+
+</html>
